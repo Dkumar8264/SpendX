@@ -567,6 +567,24 @@ textarea {
   font-weight: 600;
 }
 
+.auth-notice {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: var(--success-soft);
+  border: 1px solid rgba(5, 150, 105, 0.18);
+  color: var(--success);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.auth-helper-actions {
+  display: flex;
+}
+
+.auth-helper-btn {
+  width: 100%;
+}
+
 .auth-form-footer {
   display: flex;
   align-items: center;

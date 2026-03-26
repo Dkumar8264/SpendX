@@ -1,11 +1,17 @@
 const mongoose = require('mongoose');
 
 const userSchema = new mongoose.Schema({
+  supabaseUserId: {
+    type: String,
+    unique: true,
+    sparse: true,
+    index: true,
+  },
   name: {
     type: String,
     required: [true, 'Name is required'],
     trim: true,
-    minlength: 2
+    minlength: 2,
   },
   email: {
     type: String,
@@ -13,20 +19,20 @@ const userSchema = new mongoose.Schema({
     unique: true,
     trim: true,
     lowercase: true,
-    match: [/^\S+@\S+\.\S+$/, 'Please enter a valid email']
+    match: [/^\S+@\S+\.\S+$/, 'Please enter a valid email'],
   },
   password: {
     type: String,
-    required: [true, 'Password is required'],
-    minlength: 6
+    minlength: 6,
+    select: false,
   },
   totalBalance: {
     type: Number,
     required: [true, 'Initial balance is required'],
-    default: 0
-  }
+    default: 0,
+  },
 }, {
-  timestamps: true
+  timestamps: true,
 });
 
 module.exports = mongoose.model('User', userSchema);

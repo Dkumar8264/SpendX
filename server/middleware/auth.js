@@ -1,18 +1,24 @@
-const jwt = require('jsonwebtoken');
+const { verifySupabaseAccessToken } = require('../supabase');
+const { syncSupabaseUser } = require('../userSync');
 
-const auth = (req, res, next) => {
+const auth = async (req, res, next) => {
   try {
     const token = req.header('Authorization')?.replace('Bearer ', '');
-    
+
     if (!token) {
-      return res.status(401).json({ message: 'No token, authorization denied 🚫' });
+      return res.status(401).json({ message: 'No token, authorization denied.' });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.userId = decoded.userId;
+    const supabaseUser = await verifySupabaseAccessToken(token);
+    const user = await syncSupabaseUser(supabaseUser);
+
+    req.supabaseUser = supabaseUser;
+    req.userId = user._id;
+    req.userDoc = user;
+
     next();
   } catch (error) {
-    res.status(401).json({ message: 'Token is not valid 💀' });
+    res.status(401).json({ message: 'Supabase session is not valid.', error: error.message });
   }
 };
 

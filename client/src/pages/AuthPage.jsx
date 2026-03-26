@@ -22,9 +22,19 @@ const featureCards = [
 ];
 
 export default function AuthPage() {
-  const { login, signup, error, setError } = useApp();
+  const {
+    login,
+    signup,
+    error,
+    notice,
+    pendingConfirmationEmail,
+    resendConfirmation,
+    setError,
+    setNotice,
+  } = useApp();
   const [isLogin, setIsLogin] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [resending, setResending] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
     email: '',
@@ -34,6 +44,18 @@ export default function AuthPage() {
 
   const handleChange = (event) => {
     setFormData({ ...formData, [event.target.name]: event.target.value });
+  };
+
+  const handleResend = async () => {
+    setResending(true);
+
+    try {
+      await resendConfirmation(formData.email || pendingConfirmationEmail);
+    } catch {
+      // Error state is already handled in context.
+    } finally {
+      setResending(false);
+    }
   };
 
   const handleSubmit = async (event) => {
@@ -61,6 +83,7 @@ export default function AuthPage() {
   const toggleMode = () => {
     setIsLogin(!isLogin);
     setError('');
+    setNotice('');
     setFormData({ name: '', email: '', password: '', totalBalance: '' });
   };
 
@@ -192,7 +215,21 @@ export default function AuthPage() {
                 </div>
               )}
 
+              {notice && <div className="auth-notice">{notice}</div>}
               {error && <div className="auth-error">{error}</div>}
+
+              {pendingConfirmationEmail && (
+                <div className="auth-helper-actions">
+                  <button
+                    type="button"
+                    className="btn btn-ghost auth-helper-btn"
+                    onClick={handleResend}
+                    disabled={resending}
+                  >
+                    {resending ? 'Sending Confirmation...' : 'Resend Confirmation Email'}
+                  </button>
+                </div>
+              )}
 
               <button type="submit" className="btn btn-primary auth-submit" disabled={loading}>
                 {loading
