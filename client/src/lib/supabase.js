@@ -9,6 +9,7 @@ if (!supabaseUrl || !supabaseAnonKey) {
 }
 
 const supabaseOrigin = new URL(supabaseUrl).origin;
+const isBrowser = typeof window !== 'undefined';
 
 const resolveRequestUrl = (input) => {
   const browserOrigin = globalThis.location?.origin || 'http://localhost';
@@ -29,7 +30,7 @@ const resolveRequestUrl = (input) => {
 };
 
 const routeSupabaseRequest = (input) => {
-  if (!import.meta.env.DEV) {
+  if (!isBrowser) {
     return input;
   }
 
@@ -53,7 +54,7 @@ const supabaseFetch = (input, init) => {
 };
 
 export const getSupabaseRequestUrl = (path) => (
-  import.meta.env.DEV
+  isBrowser
     ? `${SUPABASE_DEV_PROXY_PREFIX}${path}`
     : `${supabaseUrl}${path}`
 );
