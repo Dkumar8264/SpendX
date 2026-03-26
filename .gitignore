@@ -1,0 +1,12 @@
+/client/node_modules/
+/client/dist/
+/client/vite-dev.log
+/client/vite-dev.err.log
+/server/node_modules/
+/server/.env
+/server/server-dev.log
+/server/server-dev.err.log
+/_remote_spendx_check/
+/package-lock.json
+.DS_Store
+Thumbs.db
