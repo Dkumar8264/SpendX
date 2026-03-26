@@ -4,7 +4,7 @@ SpendX is a financial tracking and budgeting application.
 
 ## Live Demo
 
-Check out the live app here: [SpendX on Vercel](https://spendx-8fbq8q73n-dkumar8264s-projects.vercel.app/)
+Check out the live app here: [SpendX on Vercel](https://spendx-xi.vercel.app?_vercel_share=xUzSK4tIKy2Q4Xrp8JYjUG52AbCexo17)
 
 ## Description
 
