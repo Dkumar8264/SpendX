@@ -1,4 +1,4 @@
-import { createElement, useState } from 'react';
+import { createElement, useEffect, useState } from 'react';
 import { HiChartBar, HiOfficeBuilding, HiShieldCheck } from 'react-icons/hi';
 import ThemeToggle from '../components/ThemeToggle';
 import { useApp } from '../context/AppContext';
@@ -28,6 +28,7 @@ export default function AuthPage() {
     error,
     notice,
     pendingConfirmationEmail,
+    emailCooldownUntil,
     resendConfirmation,
     setError,
     setNotice,
@@ -35,6 +36,7 @@ export default function AuthPage() {
   const [isLogin, setIsLogin] = useState(true);
   const [loading, setLoading] = useState(false);
   const [resending, setResending] = useState(false);
+  const [emailCooldownSeconds, setEmailCooldownSeconds] = useState(0);
   const [formData, setFormData] = useState({
     name: '',
     email: '',
@@ -45,6 +47,22 @@ export default function AuthPage() {
   const handleChange = (event) => {
     setFormData({ ...formData, [event.target.name]: event.target.value });
   };
+
+  useEffect(() => {
+    const updateCooldown = () => {
+      const remainingMs = emailCooldownUntil - Date.now();
+      setEmailCooldownSeconds(remainingMs > 0 ? Math.ceil(remainingMs / 1000) : 0);
+    };
+
+    updateCooldown();
+
+    if (emailCooldownUntil <= Date.now()) {
+      return undefined;
+    }
+
+    const timer = window.setInterval(updateCooldown, 1000);
+    return () => window.clearInterval(timer);
+  }, [emailCooldownUntil]);
 
   const handleResend = async () => {
     setResending(true);
@@ -86,6 +104,16 @@ export default function AuthPage() {
     setNotice('');
     setFormData({ name: '', email: '', password: '', totalBalance: '' });
   };
+
+  const isSignupBlocked = !isLogin && emailCooldownSeconds > 0;
+  const signupButtonLabel = loading
+    ? 'Creating Account...'
+    : (isSignupBlocked ? `Try Again In ${emailCooldownSeconds}s` : 'Create Account');
+  const resendButtonLabel = resending
+    ? 'Sending Confirmation...'
+    : (emailCooldownSeconds > 0
+      ? `Resend In ${emailCooldownSeconds}s`
+      : 'Resend Confirmation Email');
 
   return (
     <div className="auth-page">
@@ -224,17 +252,21 @@ export default function AuthPage() {
                     type="button"
                     className="btn btn-ghost auth-helper-btn"
                     onClick={handleResend}
-                    disabled={resending}
+                    disabled={resending || emailCooldownSeconds > 0}
                   >
-                    {resending ? 'Sending Confirmation...' : 'Resend Confirmation Email'}
+                    {resendButtonLabel}
                   </button>
                 </div>
               )}
 
-              <button type="submit" className="btn btn-primary auth-submit" disabled={loading}>
+              <button
+                type="submit"
+                className="btn btn-primary auth-submit"
+                disabled={loading || isSignupBlocked}
+              >
                 {loading
                   ? (isLogin ? 'Signing In...' : 'Creating Account...')
-                  : (isLogin ? 'Sign In' : 'Create Account')}
+                  : (isLogin ? 'Sign In' : signupButtonLabel)}
               </button>
             </form>
 

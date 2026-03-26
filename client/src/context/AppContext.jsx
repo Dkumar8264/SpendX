@@ -1,13 +1,85 @@
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useContext, useEffect, useState } from 'react';
-import { supabase } from '../lib/supabase';
+import { getSupabaseRequestUrl, supabase, supabaseAnonKey } from '../lib/supabase';
 
 const AppContext = createContext();
+const EMAIL_ACTION_COOLDOWN_MS = 60 * 1000;
 
 const getSupabaseErrorMessage = (error, fallbackMessage) => error?.message || fallbackMessage;
+const normalizeEmail = (email) => email.trim().toLowerCase();
 const isEmailConfirmationPending = (error) =>
   error?.code === 'email_not_confirmed'
   || /email not confirmed/i.test(error?.message || '');
+const isFetchFailure = (error) => /failed to fetch/i.test(error?.message || '');
+const isEmailRateLimited = (error) =>
+  error?.code === 'over_email_send_rate_limit'
+  || /email rate limit/i.test(error?.message || '')
+  || /too many requests/i.test(error?.message || '');
+const authHeaders = {
+  apikey: supabaseAnonKey,
+  'Content-Type': 'application/json',
+};
+
+const readJson = async (response) => {
+  const text = await response.text();
+
+  if (!text) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { message: text };
+  }
+};
+
+const parseAuthResponse = async (response, fallbackMessage) => {
+  const payload = await readJson(response);
+
+  if (!response.ok) {
+    const error = new Error(
+      payload?.msg
+      || payload?.message
+      || payload?.error_description
+      || payload?.error
+      || fallbackMessage
+    );
+
+    error.code = payload?.code || payload?.error_code;
+    error.status = response.status;
+    throw error;
+  }
+
+  return payload || {};
+};
+
+const signUpWithRestFallback = async ({ name, email, password, totalBalance }) => {
+  const response = await fetch(getSupabaseRequestUrl('/auth/v1/signup'), {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({
+      email,
+      password,
+      data: {
+        name: name.trim(),
+        totalBalance: Number(totalBalance) || 0,
+      },
+    }),
+  });
+
+  return parseAuthResponse(response, 'Unable to create your account.');
+};
+
+const signInWithRestFallback = async ({ email, password }) => {
+  const response = await fetch(getSupabaseRequestUrl('/auth/v1/token?grant_type=password'), {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({ email, password }),
+  });
+
+  return parseAuthResponse(response, 'Unable to sign in.');
+};
 
 export function AppProvider({ children }) {
   const [user, setUser] = useState(null);
@@ -18,12 +90,17 @@ export function AppProvider({ children }) {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [pendingConfirmationEmail, setPendingConfirmationEmail] = useState('');
+  const [emailCooldownUntil, setEmailCooldownUntil] = useState(0);
 
   const clearSessionState = () => {
     setToken(null);
     setUser(null);
     setTransactions([]);
     setSummary(null);
+  };
+
+  const startEmailCooldown = () => {
+    setEmailCooldownUntil(Date.now() + EMAIL_ACTION_COOLDOWN_MS);
   };
 
   const calculateSummary = (transList, profile) => {
@@ -60,44 +137,71 @@ export function AppProvider({ children }) {
     };
   };
 
-  const loadAllData = async (userId) => {
+  const ensureProfile = async (authUser) => {
+    const defaultProfile = {
+      id: authUser.id,
+      name: authUser.user_metadata?.name?.trim() || authUser.email?.split('@')[0] || '',
+      total_balance: Number(authUser.user_metadata?.totalBalance) || 0,
+    };
+
+    const { data: existingProfile, error: lookupError } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', authUser.id)
+      .maybeSingle();
+
+    if (lookupError) {
+      throw lookupError;
+    }
+
+    if (existingProfile) {
+      return existingProfile;
+    }
+
+    const { data: createdProfile, error: createError } = await supabase
+      .from('profiles')
+      .insert([defaultProfile])
+      .select('*')
+      .single();
+
+    if (createError) {
+      throw createError;
+    }
+
+    return createdProfile || defaultProfile;
+  };
+
+  const loadAllData = async (authUserArg) => {
     try {
       setLoading(true);
+      const authUser = authUserArg || (await supabase.auth.getUser()).data.user;
 
-      // Fetch Profile
-      const { data: profileData, error: profileError } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', userId)
-        .single();
-
-      if (profileError && profileError.code !== 'PGRST116') { // PGRST116 is "No rows found"
-        throw profileError;
+      if (!authUser?.id) {
+        throw new Error('Unable to restore your account session.');
       }
 
-      // Fetch Transactions
+      const profile = await ensureProfile(authUser);
+
       const { data: transData, error: transError } = await supabase
         .from('transactions')
         .select('*')
-        .eq('user_id', userId)
+        .eq('user_id', authUser.id)
         .order('date', { ascending: false });
 
       if (transError) throw transError;
 
-      const profile = profileData || { id: userId, name: '', total_balance: 0 };
       const transList = transData || [];
 
-      // Map Supabase fields to the UI expected fields (if different)
       const normalizedTransactions = transList.map((t) => ({
         ...t,
-        _id: t.id, // UI expects _id from MongoDB
+        _id: t.id,
         userId: t.user_id,
       }));
 
       const userData = {
         id: profile.id,
         name: profile.name,
-        email: (await supabase.auth.getUser()).data.user?.email,
+        email: authUser.email,
         totalBalance: profile.total_balance,
       };
 
@@ -134,7 +238,7 @@ export function AppProvider({ children }) {
         setToken(accessToken);
 
         if (data.session?.user?.id) {
-          await loadAllData(data.session.user.id);
+          await loadAllData(data.session.user);
         } else {
           setLoading(false);
         }
@@ -158,7 +262,7 @@ export function AppProvider({ children }) {
         setLoading(false);
       } else if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
         if (session?.user?.id) {
-          loadAllData(session.user.id);
+          loadAllData(session.user);
         }
       }
     });
@@ -173,47 +277,63 @@ export function AppProvider({ children }) {
 
   const signup = async (name, email, password, totalBalance) => {
     try {
+      const normalizedEmail = normalizeEmail(email);
+      const trimmedName = name.trim();
+      const openingBalance = Number(totalBalance) || 0;
+
       setError('');
       setNotice('');
       setLoading(true);
 
-      const { data, error: signupError } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: {
-            name: name.trim(),
-            totalBalance: Number(totalBalance) || 0,
-          },
-        },
-      });
+      let data;
 
-      if (signupError) throw signupError;
-
-      const user_id = data.user?.id || data.session?.user?.id;
-
-      if (user_id) {
-        // Create Profile record
-        const { error: profileError } = await supabase
-          .from('profiles')
-          .insert([
-            {
-              id: user_id,
-              name: name.trim(),
-              total_balance: Number(totalBalance) || 0,
+      try {
+        const signupResult = await supabase.auth.signUp({
+          email: normalizedEmail,
+          password,
+          options: {
+            data: {
+              name: trimmedName,
+              totalBalance: openingBalance,
             },
-          ]);
+          },
+        });
 
-        if (profileError) {
-          console.error('Profile creation error:', profileError);
-          // We don't throw here to avoid blocking signup if Profile fails but user exists
+        if (signupResult.error) {
+          throw signupResult.error;
+        }
+
+        data = signupResult.data;
+      } catch (sdkError) {
+        if (!isFetchFailure(sdkError)) {
+          throw sdkError;
+        }
+
+        data = await signUpWithRestFallback({
+          name: trimmedName,
+          email: normalizedEmail,
+          password,
+          totalBalance: openingBalance,
+        });
+
+        if (data.access_token && data.refresh_token) {
+          await supabase.auth.setSession({
+            access_token: data.access_token,
+            refresh_token: data.refresh_token,
+          });
         }
       }
 
-      const accessToken = data.session?.access_token ?? null;
+      const user_id = data.user?.id || data.session?.user?.id;
+
+      const accessToken =
+        data.session?.access_token
+        || data.access_token
+        || null;
 
       if (!accessToken) {
-        setPendingConfirmationEmail(email.trim());
+        setPendingConfirmationEmail(normalizedEmail);
+        startEmailCooldown();
         setNotice(
           'Account created. Check your inbox and spam folder to confirm your email before signing in.'
         );
@@ -223,37 +343,74 @@ export function AppProvider({ children }) {
 
       setPendingConfirmationEmail('');
       setToken(accessToken);
-      if (user_id) await loadAllData(user_id);
+      if (user_id) {
+        await loadAllData(data.user || data.session?.user || { id: user_id, email: normalizedEmail });
+      }
     } catch (signupFailure) {
       setLoading(false);
-      setError(getSupabaseErrorMessage(signupFailure, 'Unable to create your account.'));
+      if (isEmailRateLimited(signupFailure)) {
+        startEmailCooldown();
+        setNotice('Too many email attempts. Wait a minute before trying again.');
+        setError('');
+      } else {
+        setError(getSupabaseErrorMessage(signupFailure, 'Unable to create your account.'));
+      }
+
       throw signupFailure;
     }
   };
 
   const login = async (email, password) => {
     try {
+      const normalizedEmail = normalizeEmail(email);
+
       setError('');
       setNotice('');
       setLoading(true);
 
-      const { data, error: loginError } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
+      let data;
 
-      if (loginError) throw loginError;
+      try {
+        const loginResult = await supabase.auth.signInWithPassword({
+          email: normalizedEmail,
+          password,
+        });
 
-      const accessToken = data.session?.access_token ?? null;
-      const userId = data.user?.id;
+        if (loginResult.error) {
+          throw loginResult.error;
+        }
+
+        data = loginResult.data;
+      } catch (sdkError) {
+        if (!isFetchFailure(sdkError)) {
+          throw sdkError;
+        }
+
+        data = await signInWithRestFallback({ email: normalizedEmail, password });
+
+        if (data.access_token && data.refresh_token) {
+          await supabase.auth.setSession({
+            access_token: data.access_token,
+            refresh_token: data.refresh_token,
+          });
+        }
+      }
+
+      const accessToken =
+        data.session?.access_token
+        || data.access_token
+        || null;
+      const userId = data.user?.id || data.session?.user?.id;
 
       setPendingConfirmationEmail('');
       setToken(accessToken);
-      if (userId) await loadAllData(userId);
+      if (userId) {
+        await loadAllData(data.user || data.session?.user || { id: userId, email: normalizedEmail });
+      }
     } catch (loginFailure) {
       setLoading(false);
       if (isEmailConfirmationPending(loginFailure)) {
-        setPendingConfirmationEmail(email.trim());
+        setPendingConfirmationEmail(normalizeEmail(email));
         setNotice(
           'Confirm your email before signing in. Check your inbox and spam folder, or resend the confirmation email below.'
         );
@@ -266,8 +423,12 @@ export function AppProvider({ children }) {
 
   const resendConfirmation = async (email = pendingConfirmationEmail) => {
     try {
-      const normalizedEmail = email.trim();
+      const normalizedEmail = normalizeEmail(email);
       if (!normalizedEmail) throw new Error('Enter your email address first.');
+
+      if (emailCooldownUntil > Date.now()) {
+        throw new Error('Please wait before sending another confirmation email.');
+      }
 
       setError('');
       const { error: resendError } = await supabase.auth.resend({
@@ -276,9 +437,17 @@ export function AppProvider({ children }) {
       });
 
       if (resendError) throw resendError;
+      startEmailCooldown();
       setNotice('Confirmation email sent again. Check your inbox and spam folder.');
     } catch (resendFailure) {
-      setError(getSupabaseErrorMessage(resendFailure, 'Unable to resend confirmation email.'));
+      if (isEmailRateLimited(resendFailure)) {
+        startEmailCooldown();
+        setNotice('Too many email attempts. Wait a minute before trying again.');
+        setError('');
+      } else {
+        setError(getSupabaseErrorMessage(resendFailure, 'Unable to resend confirmation email.'));
+      }
+
       throw resendFailure;
     }
   };
@@ -307,7 +476,7 @@ export function AppProvider({ children }) {
         }]);
 
       if (insertError) throw insertError;
-      await loadAllData(authUser.id);
+      await loadAllData(authUser);
     } catch (err) {
       setError(err.message || 'Failed to add transaction');
       throw err;
@@ -325,7 +494,7 @@ export function AppProvider({ children }) {
         .eq('id', id);
 
       if (deleteError) throw deleteError;
-      await loadAllData(authUser.id);
+      await loadAllData(authUser);
     } catch {
       setError('Unable to delete this transaction.');
     }
@@ -351,7 +520,7 @@ export function AppProvider({ children }) {
         .eq('id', authUser.id);
 
       if (updateError) throw updateError;
-      await loadAllData(authUser.id);
+      await loadAllData(authUser);
     } catch (err) {
       setError(err.message || 'Unable to reset your balance.');
       throw err;
@@ -369,6 +538,7 @@ export function AppProvider({ children }) {
         error,
         notice,
         pendingConfirmationEmail,
+        emailCooldownUntil,
         signup,
         login,
         logout,
